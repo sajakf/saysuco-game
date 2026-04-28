@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "saysuco-game",
+      "runtimeExecutable": "/Users/skf/.nvm/versions/node/v24.15.0/bin/npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000,
+      "autoPort": false,
+      "cwd": "/Users/skf/Coded-MVP-Task/saysuco-game"
+    }
+  ]
+}
