@@ -11,11 +11,18 @@ import { PlayerIcon, AIIcon } from "./SucoLogo";
 import { createEmptyBoard, getBestMove, checkWinner, isBoardFull, type Board } from "@/lib/gameLogic";
 import { recordGameResult, canPlayToday, getPlayerData } from "@/lib/storage";
 import { sounds } from "@/lib/sounds";
-import { getRandomTrivia, type TriviaQuestion } from "@/lib/trivia";
+import {
+  fetchTriviaFromAPI,
+  pickFromPool,
+  getRandomTrivia,
+  FALLBACK_QUESTIONS,
+  type TriviaQuestion,
+} from "@/lib/trivia";
 
 const GAME_DURATION = 180;
 const TRIVIA_BONUS = 15;
 const TRIVIA_EVERY_N_GAMES = 3;
+const POOL_REFETCH_THRESHOLD = 3; // refetch when fewer than this remain
 
 interface GameBoardProps {
   phone: string;
@@ -36,18 +43,48 @@ export function GameBoard({ phone, onGoHome }: GameBoardProps) {
   const [promoCode, setPromoCode] = useState<string | null>(null);
   const [promoJustUnlocked, setPromoJustUnlocked] = useState(false);
   const [gamesPlayed, setGamesPlayed] = useState(0);
+
+  // ── Trivia pool from API ────────────────────────────────────────────────────
+  const [triviaPool, setTriviaPool] = useState<TriviaQuestion[]>([...FALLBACK_QUESTIONS]);
+  const [triviaFetching, setTriviaFetching] = useState(false);
+  const [triviaOpen, setTriviaOpen] = useState(false);
   const [triviaQuestion, setTriviaQuestion] = useState<TriviaQuestion | null>(null);
   const [askedTriviaIds, setAskedTriviaIds] = useState<number[]>([]);
+
   const [statusMsg, setStatusMsg] = useState("Your move!");
   const [showPlayerTurnFlash, setShowPlayerTurnFlash] = useState(false);
   const aiTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const resultRecordedRef = useRef(false);
+  const fetchingRef = useRef(false); // prevent duplicate fetches
 
+  // ── Load player data + initial question fetch ───────────────────────────────
   useEffect(() => {
     const data = getPlayerData(phone);
     if (data) { setTotalWins(data.totalWins); setPromoCode(data.promoCode); }
-  }, [phone]);
+    fetchPool(); // warm up the pool on mount
+  }, [phone]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  async function fetchPool() {
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
+    setTriviaFetching(true);
+    try {
+      const questions = await fetchTriviaFromAPI(15);
+      setTriviaPool((prev) => {
+        // Merge without duplicates (by id)
+        const existingIds = new Set(prev.map((q) => q.id));
+        const fresh = questions.filter((q) => !existingIds.has(q.id));
+        return [...prev, ...fresh];
+      });
+    } catch {
+      // silently fall back to whatever is already in the pool
+    } finally {
+      setTriviaFetching(false);
+      fetchingRef.current = false;
+    }
+  }
+
+  // ── Timer ───────────────────────────────────────────────────────────────────
   const handleTick = useCallback(() => {
     setTimeLeft((t) => {
       if (t <= 1) { endGame("lose", true); return 0; }
@@ -55,6 +92,7 @@ export function GameBoard({ phone, onGoHome }: GameBoardProps) {
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Game logic ──────────────────────────────────────────────────────────────
   function endGame(result: "win" | "lose" | "draw", _fromTimer = false) {
     if (resultRecordedRef.current) return;
     resultRecordedRef.current = true;
@@ -115,31 +153,48 @@ export function GameBoard({ phone, onGoHome }: GameBoardProps) {
     }
   }
 
-  function startNextGame() {
-    const nextGameNum = gamesPlayed + 1;
-    const { canPlay } = canPlayToday(phone);
-    if (!canPlay) { onGoHome(); return; }
-    if (nextGameNum % TRIVIA_EVERY_N_GAMES === 0) {
-      const q = getRandomTrivia(askedTriviaIds);
-      setTriviaQuestion(q);
-      setTimerPaused(true);
-    } else {
-      resetGame();
-    }
-    setGamesPlayed(nextGameNum);
+  // ── Trivia flow ─────────────────────────────────────────────────────────────
+  function openTrivia() {
+    setTimerPaused(true);
+    setTriviaOpen(true);
+
+    // Pick a question from the pool
+    const available = triviaPool.filter((q) => !askedTriviaIds.includes(q.id));
+    const q = available.length > 0
+      ? available[Math.floor(Math.random() * available.length)]
+      : getRandomTrivia(askedTriviaIds); // absolute fallback
+    setTriviaQuestion(q);
+
+    // Refetch if pool is running low
+    const remaining = triviaPool.filter((q) => !askedTriviaIds.includes(q.id)).length;
+    if (remaining <= POOL_REFETCH_THRESHOLD) fetchPool();
   }
 
   function handleTriviaAnswer(correct: boolean) {
-    setTriviaQuestion(null);
-    if (correct) setTimeLeft((t) => Math.min(t + TRIVIA_BONUS, GAME_DURATION));
     if (triviaQuestion) setAskedTriviaIds((ids) => [...ids, triviaQuestion.id]);
+    if (correct) setTimeLeft((t) => Math.min(t + TRIVIA_BONUS, GAME_DURATION));
+    setTriviaOpen(false);
+    setTriviaQuestion(null);
     resetGame();
   }
 
   function handleTriviaSkip() {
     if (triviaQuestion) setAskedTriviaIds((ids) => [...ids, triviaQuestion.id]);
+    setTriviaOpen(false);
     setTriviaQuestion(null);
     resetGame();
+  }
+
+  function startNextGame() {
+    const nextGameNum = gamesPlayed + 1;
+    const { canPlay } = canPlayToday(phone);
+    if (!canPlay) { onGoHome(); return; }
+    if (nextGameNum % TRIVIA_EVERY_N_GAMES === 0) {
+      openTrivia();
+    } else {
+      resetGame();
+    }
+    setGamesPlayed(nextGameNum);
   }
 
   function resetGame() {
@@ -175,7 +230,12 @@ export function GameBoard({ phone, onGoHome }: GameBoardProps) {
               <span className="text-xs text-suco-plum font-bold">{phone}</span>
             </div>
           </div>
-          <div className="w-16" />
+          <div className="w-16 flex justify-end">
+            {/* Tiny indicator when fetching fresh questions */}
+            {triviaFetching && (
+              <div title="Loading trivia…" className="w-4 h-4 border-2 border-suco-plum border-t-transparent rounded-full animate-spin opacity-50" />
+            )}
+          </div>
         </div>
 
         {/* Turn indicator + Timer */}
@@ -239,9 +299,15 @@ export function GameBoard({ phone, onGoHome }: GameBoardProps) {
         onGoHome={onGoHome}
       />
 
+      {/* Trivia challenge — shows loading skeleton until question is ready */}
       <AnimatePresence>
-        {triviaQuestion && (
-          <TriviaChallenge question={triviaQuestion} onAnswer={handleTriviaAnswer} onSkip={handleTriviaSkip} />
+        {triviaOpen && (
+          <TriviaChallenge
+            question={triviaQuestion}
+            loading={triviaQuestion === null}
+            onAnswer={handleTriviaAnswer}
+            onSkip={handleTriviaSkip}
+          />
         )}
       </AnimatePresence>
     </div>

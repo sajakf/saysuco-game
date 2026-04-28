@@ -6,17 +6,47 @@ import { TriviaQuestion } from "@/lib/trivia";
 import { sounds } from "@/lib/sounds";
 
 interface TriviaChallengeProps {
-  question: TriviaQuestion;
+  question: TriviaQuestion | null;  // null = still loading
+  loading?: boolean;
   onAnswer: (correct: boolean) => void;
   onSkip: () => void;
 }
 
-export function TriviaChallenge({ question, onAnswer, onSkip }: TriviaChallengeProps) {
+export function TriviaChallenge({ question, loading, onAnswer, onSkip }: TriviaChallengeProps) {
   const [selected, setSelected] = useState<number | null>(null);
   const [revealed, setRevealed] = useState(false);
 
+  // ── Loading skeleton ──────────────────────────────────────────────────────
+  if (loading || !question) {
+    return (
+      <motion.div
+        className="fixed inset-0 z-50 flex items-center justify-center p-4"
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      >
+        <div className="absolute inset-0 bg-suco-dark/55 backdrop-blur-md" />
+        <motion.div
+          className="relative w-full max-w-md rounded-3xl border border-suco-plum/25 bg-white overflow-hidden shadow-2xl p-8 flex flex-col items-center gap-5"
+          initial={{ scale: 0.85 }} animate={{ scale: 1 }}
+          transition={{ type: "spring", stiffness: 280, damping: 22 }}
+        >
+          <div className="w-12 h-12 border-4 border-suco-plum border-t-transparent rounded-full animate-spin" />
+          <div className="text-center space-y-1">
+            <p className="text-sm font-bold text-suco-dark">Loading Trivia…</p>
+            <p className="text-xs text-suco-muted">Fetching a fresh question for you</p>
+          </div>
+          {/* Shimmer bars */}
+          <div className="w-full space-y-2">
+            {[80, 65, 72, 60].map((w, i) => (
+              <div key={i} className="h-10 bg-suco-beige rounded-xl animate-pulse" style={{ width: `${w}%` }} />
+            ))}
+          </div>
+        </motion.div>
+      </motion.div>
+    );
+  }
+
   function handleSelect(idx: number) {
-    if (revealed) return;
+    if (revealed || !question) return;
     setSelected(idx);
     setRevealed(true);
     const correct = idx === question.correctIndex;
@@ -43,10 +73,29 @@ export function TriviaChallenge({ question, onAnswer, onSkip }: TriviaChallengeP
         <div className="bg-suco-plum/8 p-5 border-b border-suco-plum/10">
           <div className="flex items-center gap-3">
             <span className="text-3xl">{question.emoji}</span>
-            <div>
+            <div className="flex-1 min-w-0">
               <p className="text-xs text-suco-plum uppercase tracking-widest font-bold">
                 Say Suco Trivia Challenge
               </p>
+              {/* Category + difficulty tags for API questions */}
+              {question.source === "api" && (
+                <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                  {question.category && (
+                    <span className="text-[10px] bg-suco-plum/10 text-suco-plum rounded-full px-2 py-0.5 font-medium truncate max-w-[140px]">
+                      {question.category}
+                    </span>
+                  )}
+                  {question.difficulty && (
+                    <span className={`text-[10px] rounded-full px-2 py-0.5 font-bold capitalize ${
+                      question.difficulty === "easy"   ? "bg-green-100 text-green-700" :
+                      question.difficulty === "medium" ? "bg-amber-100 text-amber-700" :
+                                                         "bg-red-100 text-red-700"
+                    }`}>
+                      {question.difficulty}
+                    </span>
+                  )}
+                </div>
+              )}
               <p className="text-xs text-suco-mid">Answer correctly to earn +15 bonus seconds!</p>
             </div>
           </div>
