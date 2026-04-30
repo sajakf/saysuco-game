@@ -61,11 +61,10 @@ function shuffleArray<T>(arr: T[]): T[] {
 }
 
 // ─── Open Trivia DB API ───────────────────────────────────────────────────────
-// Themed categories aligned with Say Suco's health / nature / food identity:
-//   9  = General Knowledge  17 = Science & Nature
-//  22  = Geography          27 = Animals
-//  25  = Art (bonus variety)
-const THEMED_CATEGORY_IDS = [9, 17, 22, 27, 25];
+// Category weights — General Knowledge (9) is the most recognisable for a
+// café audience, so it gets 5 slots out of 8 (≈62% of fetches).
+// Science & Nature (17) and Geography (22) round it out with variety.
+const THEMED_CATEGORY_IDS = [9, 9, 9, 9, 9, 17, 22, 27];
 
 interface OTDBResult {
   category: string;
