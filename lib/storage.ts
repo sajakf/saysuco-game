@@ -1,10 +1,10 @@
 export interface PlayerData {
   phone: string;
   totalWins: number;
-  lastPlayDate: string | null;
-  lastResult: "win" | "lose" | "draw" | null;
+  weeklyWins: number;       // resets each new week
+  currentWeek: string;      // e.g. "2026-W18"
+  lastPromoWeek: string | null; // week the last promo was earned
   promoCode: string | null;
-  promoUnlocked: boolean;
   joinedAt: string;
 }
 
@@ -15,21 +15,26 @@ export interface WinnersLog {
 }
 
 const STORAGE_KEY = "saysuco_player_";
-const WINNERS_KEY = "saysuco_winners";
-const WINS_THRESHOLD = 10;
+const WINNERS_KEY  = "saysuco_winners";
+const WINS_THRESHOLD = 10; // weekly wins needed for a promo
 
-export function getToday(): string {
-  return new Date().toISOString().split("T")[0];
+// ── Week helper ──────────────────────────────────────────────────────────────
+export function getCurrentWeek(): string {
+  const now  = new Date();
+  const jan1 = new Date(now.getFullYear(), 0, 1);
+  const week = Math.ceil(
+    ((now.getTime() - jan1.getTime()) / 86_400_000 + jan1.getDay() + 1) / 7
+  );
+  return `${now.getFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
+// ── CRUD helpers ─────────────────────────────────────────────────────────────
 export function getPlayerData(phone: string): PlayerData | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = localStorage.getItem(STORAGE_KEY + phone);
     return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 export function savePlayerData(data: PlayerData): void {
@@ -43,75 +48,91 @@ export function createPlayer(phone: string): PlayerData {
   const data: PlayerData = {
     phone,
     totalWins: 0,
-    lastPlayDate: null,
-    lastResult: null,
+    weeklyWins: 0,
+    currentWeek: getCurrentWeek(),
+    lastPromoWeek: null,
     promoCode: null,
-    promoUnlocked: false,
     joinedAt: new Date().toISOString(),
   };
   savePlayerData(data);
   return data;
 }
 
-export function canPlayToday(phone: string): { canPlay: boolean; reason?: string } {
-  const data = getPlayerData(phone);
-  if (!data) return { canPlay: true };
-  const today = getToday();
-
-  if (data.lastPlayDate === today && data.lastResult === "lose") {
-    return {
-      canPlay: false,
-      reason: "You already lost today. Come back tomorrow for another chance!",
-    };
+// ── Weekly reset helper ───────────────────────────────────────────────────────
+function refreshWeek(data: PlayerData): PlayerData {
+  const thisWeek = getCurrentWeek();
+  if (data.currentWeek !== thisWeek) {
+    data.weeklyWins  = 0;
+    data.currentWeek = thisWeek;
   }
-  return { canPlay: true };
+  return data;
 }
 
+// ── Record a game result ──────────────────────────────────────────────────────
 export function recordGameResult(
   phone: string,
   result: "win" | "lose" | "draw"
-): { promoUnlocked: boolean; promoCode: string | null; totalWins: number } {
-  const data = getPlayerData(phone) ?? createPlayer(phone);
-  const today = getToday();
+): { promoJustUnlocked: boolean; promoCode: string | null; totalWins: number; weeklyWins: number } {
+  let data = getPlayerData(phone) ?? createPlayer(phone);
+  data = refreshWeek(data);
 
   if (result === "win") {
-    data.totalWins += 1;
+    data.totalWins  += 1;
+    data.weeklyWins += 1;
   }
 
-  data.lastPlayDate = today;
-  data.lastResult = result;
+  // Award promo once per week when weekly threshold is hit
+  const thisWeek    = getCurrentWeek();
+  const alreadyGot  = data.lastPromoWeek === thisWeek;
+  let promoJustUnlocked = false;
 
-  if (data.totalWins >= WINS_THRESHOLD && !data.promoUnlocked) {
-    data.promoUnlocked = true;
-    data.promoCode = generatePromoCode(phone);
+  if (data.weeklyWins >= WINS_THRESHOLD && !alreadyGot) {
+    data.lastPromoWeek = thisWeek;
+    data.promoCode     = generatePromoCode(phone, thisWeek);
+    promoJustUnlocked  = true;
     logWinner(phone, data.totalWins);
   }
 
   savePlayerData(data);
   return {
-    promoUnlocked: data.promoUnlocked,
+    promoJustUnlocked,
     promoCode: data.promoCode,
     totalWins: data.totalWins,
+    weeklyWins: data.weeklyWins,
   };
 }
 
-function generatePromoCode(phone: string): string {
+// ── Promo status for current week ────────────────────────────────────────────
+export function getWeeklyPromoStatus(phone: string): {
+  weeklyWins: number;
+  promoEarnedThisWeek: boolean;
+  promoCode: string | null;
+} {
+  const raw  = getPlayerData(phone);
+  if (!raw) return { weeklyWins: 0, promoEarnedThisWeek: false, promoCode: null };
+  const data = refreshWeek({ ...raw });
+  return {
+    weeklyWins:          data.weeklyWins,
+    promoEarnedThisWeek: data.lastPromoWeek === getCurrentWeek(),
+    promoCode:           data.promoCode,
+  };
+}
+
+// ── Internals ─────────────────────────────────────────────────────────────────
+function generatePromoCode(phone: string, week: string): string {
   const suffix = phone.slice(-4);
-  const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
-  return `SUCO-${suffix}-${rand}`;
+  const rand   = Math.random().toString(36).substring(2, 6).toUpperCase();
+  const weekTag = week.replace("-", "").replace("W", "W");
+  return `SUCO-${suffix}-${weekTag}-${rand}`;
 }
 
 function logWinner(phone: string, wins: number): void {
   try {
-    const raw = localStorage.getItem(WINNERS_KEY);
+    const raw     = localStorage.getItem(WINNERS_KEY);
     const winners: WinnersLog[] = raw ? JSON.parse(raw) : [];
     const existing = winners.find((w) => w.phone === phone);
-    if (existing) {
-      existing.wins = wins;
-      existing.date = new Date().toISOString();
-    } else {
-      winners.push({ phone, wins, date: new Date().toISOString() });
-    }
+    if (existing) { existing.wins = wins; existing.date = new Date().toISOString(); }
+    else winners.push({ phone, wins, date: new Date().toISOString() });
     localStorage.setItem(WINNERS_KEY, JSON.stringify(winners));
   } catch {}
 }
@@ -121,9 +142,7 @@ export function getAllWinners(): WinnersLog[] {
   try {
     const raw = localStorage.getItem(WINNERS_KEY);
     return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 
 export const WINS_TO_PROMO = WINS_THRESHOLD;

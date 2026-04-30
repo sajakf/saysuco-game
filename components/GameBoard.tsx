@@ -7,194 +7,208 @@ import { Timer } from "./Timer";
 import { ScoreBoard } from "./ScoreBoard";
 import { WinPopup } from "./WinPopup";
 import { TriviaChallenge } from "./TriviaChallenge";
-import { PlayerIcon, AIIcon } from "./SucoLogo";
+import { PlayerIcon, AIIcon, FriendIcon } from "./SucoLogo";
 import { createEmptyBoard, getBestMove, checkWinner, isBoardFull, type Board } from "@/lib/gameLogic";
-import { recordGameResult, canPlayToday, getPlayerData } from "@/lib/storage";
+import { recordGameResult, getPlayerData, getWeeklyPromoStatus } from "@/lib/storage";
 import { sounds } from "@/lib/sounds";
 import {
-  fetchTriviaFromAPI,
-  pickFromPool,
-  getRandomTrivia,
-  FALLBACK_QUESTIONS,
-  type TriviaQuestion,
+  fetchTriviaFromAPI, pickFromPool, getRandomTrivia,
+  FALLBACK_QUESTIONS, type TriviaQuestion,
 } from "@/lib/trivia";
+import type { GameMode } from "./LandingScreen";
 
-const GAME_DURATION = 180;
-const TRIVIA_BONUS = 15;
-const TRIVIA_EVERY_N_GAMES = 3;
-const POOL_REFETCH_THRESHOLD = 3; // refetch when fewer than this remain
+const GAME_DURATION        = 60;   // 1 minute
+const TRIVIA_BONUS         = 15;
+const POOL_REFETCH_AT      = 3;
 
 interface GameBoardProps {
   phone: string;
+  gameMode: GameMode;
+  friendPhone?: string;
   onGoHome: () => void;
 }
 
-export function GameBoard({ phone, onGoHome }: GameBoardProps) {
-  const [board, setBoard] = useState<Board>(createEmptyBoard());
-  const [isPlayerTurn, setIsPlayerTurn] = useState(true);
-  const [timeLeft, setTimeLeft] = useState(GAME_DURATION);
-  const [timerPaused, setTimerPaused] = useState(false);
-  const [gameResult, setGameResult] = useState<"win" | "lose" | "draw" | null>(null);
-  const [winningLine, setWinningLine] = useState<number[]>([]);
-  const [sessionWins, setSessionWins] = useState(0);
-  const [sessionLoses, setSessionLoses] = useState(0);
-  const [sessionDraws, setSessionDraws] = useState(0);
-  const [totalWins, setTotalWins] = useState(0);
-  const [promoCode, setPromoCode] = useState<string | null>(null);
+export function GameBoard({ phone, gameMode, friendPhone, onGoHome }: GameBoardProps) {
+  const [board, setBoard]                     = useState<Board>(createEmptyBoard());
+  const [isPlayerTurn, setIsPlayerTurn]       = useState(true);   // true = registered user
+  const [timeLeft, setTimeLeft]               = useState(GAME_DURATION);
+  const [timerPaused, setTimerPaused]         = useState(false);
+  const [gameResult, setGameResult]           = useState<"win" | "lose" | "draw" | null>(null);
+  const [winningLine, setWinningLine]         = useState<number[]>([]);
+  const [sessionWins, setSessionWins]         = useState(0);
+  const [sessionLoses, setSessionLoses]       = useState(0);
+  const [sessionDraws, setSessionDraws]       = useState(0);
+  const [totalWins, setTotalWins]             = useState(0);
+  const [weeklyWins, setWeeklyWins]           = useState(0);
+  const [promoCode, setPromoCode]             = useState<string | null>(null);
   const [promoJustUnlocked, setPromoJustUnlocked] = useState(false);
-  const [gamesPlayed, setGamesPlayed] = useState(0);
+  const [promoEarnedThisWeek, setPromoEarnedThisWeek] = useState(false);
 
-  // ── Trivia pool from API ────────────────────────────────────────────────────
-  const [triviaPool, setTriviaPool] = useState<TriviaQuestion[]>([...FALLBACK_QUESTIONS]);
-  const [triviaFetching, setTriviaFetching] = useState(false);
-  const [triviaOpen, setTriviaOpen] = useState(false);
-  const [triviaQuestion, setTriviaQuestion] = useState<TriviaQuestion | null>(null);
-  const [askedTriviaIds, setAskedTriviaIds] = useState<number[]>([]);
+  // Trivia pool
+  const [triviaPool, setTriviaPool]           = useState<TriviaQuestion[]>([...FALLBACK_QUESTIONS]);
+  const [triviaFetching, setTriviaFetching]   = useState(false);
+  const [triviaOpen, setTriviaOpen]           = useState(false);
+  const [triviaQuestion, setTriviaQuestion]   = useState<TriviaQuestion | null>(null);
+  const [askedTriviaIds, setAskedTriviaIds]   = useState<number[]>([]);
 
-  const [statusMsg, setStatusMsg] = useState("Your move!");
-  const [showPlayerTurnFlash, setShowPlayerTurnFlash] = useState(false);
-  const aiTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [statusMsg, setStatusMsg]             = useState("");
+  const [showTurnFlash, setShowTurnFlash]     = useState(false);
+
+  const aiTimeoutRef     = useRef<NodeJS.Timeout | null>(null);
   const resultRecordedRef = useRef(false);
-  const fetchingRef = useRef(false); // prevent duplicate fetches
+  const fetchingRef      = useRef(false);
 
-  // ── Load player data + initial question fetch ───────────────────────────────
+  // ── Initial load ────────────────────────────────────────────────────────────
   useEffect(() => {
     const data = getPlayerData(phone);
-    if (data) { setTotalWins(data.totalWins); setPromoCode(data.promoCode); }
-    fetchPool(); // warm up the pool on mount
+    if (data) setTotalWins(data.totalWins);
+    const { weeklyWins: ww, promoEarnedThisWeek: pe, promoCode: pc } = getWeeklyPromoStatus(phone);
+    setWeeklyWins(ww);
+    setPromoEarnedThisWeek(pe);
+    if (pc) setPromoCode(pc);
+    updateStatusMsg(true);
+    fetchPool();
   }, [phone]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  function updateStatusMsg(isPlayer: boolean) {
+    if (gameMode === "ai") {
+      setStatusMsg(isPlayer ? "Your move!" : "AI thinking… 🤔");
+    } else {
+      setStatusMsg(isPlayer ? "Your turn 🥤" : `Friend's turn 🫱`);
+    }
+  }
+
+  // ── Trivia pool fetch ───────────────────────────────────────────────────────
   async function fetchPool() {
     if (fetchingRef.current) return;
     fetchingRef.current = true;
     setTriviaFetching(true);
     try {
-      const questions = await fetchTriviaFromAPI(15);
+      const qs = await fetchTriviaFromAPI(15);
       setTriviaPool((prev) => {
-        // Merge without duplicates (by id)
-        const existingIds = new Set(prev.map((q) => q.id));
-        const fresh = questions.filter((q) => !existingIds.has(q.id));
-        return [...prev, ...fresh];
+        const ids = new Set(prev.map((q) => q.id));
+        return [...prev, ...qs.filter((q) => !ids.has(q.id))];
       });
-    } catch {
-      // silently fall back to whatever is already in the pool
-    } finally {
-      setTriviaFetching(false);
-      fetchingRef.current = false;
-    }
+    } catch { /* fallback already in pool */ }
+    finally { setTriviaFetching(false); fetchingRef.current = false; }
   }
 
   // ── Timer ───────────────────────────────────────────────────────────────────
   const handleTick = useCallback(() => {
     setTimeLeft((t) => {
-      if (t <= 1) { endGame("lose", true); return 0; }
+      if (t <= 1) { endGame("lose"); return 0; }
       return t - 1;
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Game logic ──────────────────────────────────────────────────────────────
-  function endGame(result: "win" | "lose" | "draw", _fromTimer = false) {
+  // ── End game ────────────────────────────────────────────────────────────────
+  function endGame(result: "win" | "lose" | "draw") {
     if (resultRecordedRef.current) return;
     resultRecordedRef.current = true;
     if (aiTimeoutRef.current) clearTimeout(aiTimeoutRef.current);
     setTimerPaused(true);
     setGameResult(result);
 
-    const { promoUnlocked, promoCode: newCode, totalWins: newTotal } = recordGameResult(phone, result);
-    if (result === "win") setSessionWins((w) => w + 1);
+    const { promoJustUnlocked: unlocked, promoCode: newCode,
+            totalWins: newTotal, weeklyWins: newWeekly } = recordGameResult(phone, result);
+
+    if (result === "win")       setSessionWins((w) => w + 1);
     else if (result === "lose") setSessionLoses((l) => l + 1);
-    else setSessionDraws((d) => d + 1);
+    else                        setSessionDraws((d) => d + 1);
+
     setTotalWins(newTotal);
+    setWeeklyWins(newWeekly);
     if (newCode) setPromoCode(newCode);
-    if (promoUnlocked && !promoCode) setPromoJustUnlocked(true);
+    if (unlocked) { setPromoJustUnlocked(true); setPromoEarnedThisWeek(true); }
+
+    // Trigger trivia on every WIN or DRAW (not on lose / timeout)
+    if (result === "win" || result === "draw") {
+      setTimeout(() => openTrivia(), 1800);
+    }
   }
 
+  // ── AI move ─────────────────────────────────────────────────────────────────
   function makeAiMove(currentBoard: Board) {
-    setStatusMsg("AI is thinking... 🤔");
+    updateStatusMsg(false);
     aiTimeoutRef.current = setTimeout(() => {
       const move = getBestMove([...currentBoard], "medium");
       if (move === -1) return;
-      const newBoard = [...currentBoard] as Board;
-      newBoard[move] = "ai";
+      const nb = [...currentBoard] as Board;
+      nb[move] = "ai";
       sounds.aiMove();
-      setBoard(newBoard);
-      const result = checkWinner(newBoard);
+      setBoard(nb);
+      const result = checkWinner(nb);
       if (result) {
-        setWinningLine(result.line);
-        sounds.winLine();
+        setWinningLine(result.line); sounds.winLine();
         setTimeout(() => endGame("lose"), 400);
-      } else if (isBoardFull(newBoard)) {
+      } else if (isBoardFull(nb)) {
         setTimeout(() => endGame("draw"), 400);
       } else {
-        setIsPlayerTurn(true);
-        setStatusMsg("Your move!");
-        setShowPlayerTurnFlash(true);
-        setTimeout(() => setShowPlayerTurnFlash(false), 800);
+        setIsPlayerTurn(true); updateStatusMsg(true);
+        setShowTurnFlash(true); setTimeout(() => setShowTurnFlash(false), 800);
       }
     }, 600 + Math.random() * 400);
   }
 
+  // ── Cell click ───────────────────────────────────────────────────────────────
   function handleCellClick(index: number) {
-    if (!isPlayerTurn || board[index] !== null || gameResult || timerPaused) return;
-    const newBoard = [...board] as Board;
-    newBoard[index] = "player";
+    if (board[index] !== null || gameResult || timerPaused) return;
+    // In AI mode, only accept clicks on player's turn
+    if (gameMode === "ai" && !isPlayerTurn) return;
+
+    const mark: "player" | "ai" = isPlayerTurn ? "player" : "ai"; // "ai" = friend's mark
+    const nb = [...board] as Board;
+    nb[index] = mark;
     sounds.place();
-    setBoard(newBoard);
-    setIsPlayerTurn(false);
-    const result = checkWinner(newBoard);
+    setBoard(nb);
+
+    const result = checkWinner(nb);
     if (result) {
-      setWinningLine(result.line);
-      sounds.winLine();
-      setTimeout(() => endGame("win"), 400);
-    } else if (isBoardFull(newBoard)) {
+      setWinningLine(result.line); sounds.winLine();
+      // In friend mode: player wins if mark === "player", friend wins = "lose" for registered user
+      const outcome = mark === "player" ? "win" : "lose";
+      setTimeout(() => endGame(outcome), 400);
+    } else if (isBoardFull(nb)) {
       setTimeout(() => endGame("draw"), 400);
     } else {
-      makeAiMove(newBoard);
+      const nextPlayer = !isPlayerTurn;
+      setIsPlayerTurn(nextPlayer);
+      if (gameMode === "ai" && !nextPlayer) {
+        makeAiMove(nb);
+      } else {
+        updateStatusMsg(nextPlayer);
+        setShowTurnFlash(true); setTimeout(() => setShowTurnFlash(false), 800);
+      }
     }
   }
 
-  // ── Trivia flow ─────────────────────────────────────────────────────────────
+  // ── Trivia ──────────────────────────────────────────────────────────────────
   function openTrivia() {
-    setTimerPaused(true);
     setTriviaOpen(true);
-
-    // Pick a question from the pool
-    const available = triviaPool.filter((q) => !askedTriviaIds.includes(q.id));
-    const q = available.length > 0
-      ? available[Math.floor(Math.random() * available.length)]
-      : getRandomTrivia(askedTriviaIds); // absolute fallback
+    const q = pickFromPool(triviaPool, askedTriviaIds) ?? getRandomTrivia(askedTriviaIds);
     setTriviaQuestion(q);
-
-    // Refetch if pool is running low
-    const remaining = triviaPool.filter((q) => !askedTriviaIds.includes(q.id)).length;
-    if (remaining <= POOL_REFETCH_THRESHOLD) fetchPool();
+    const remaining = triviaPool.filter((x) => !askedTriviaIds.includes(x.id)).length;
+    if (remaining <= POOL_REFETCH_AT) fetchPool();
   }
 
   function handleTriviaAnswer(correct: boolean) {
     if (triviaQuestion) setAskedTriviaIds((ids) => [...ids, triviaQuestion.id]);
     if (correct) setTimeLeft((t) => Math.min(t + TRIVIA_BONUS, GAME_DURATION));
-    setTriviaOpen(false);
-    setTriviaQuestion(null);
+    setTriviaOpen(false); setTriviaQuestion(null);
     resetGame();
   }
 
   function handleTriviaSkip() {
     if (triviaQuestion) setAskedTriviaIds((ids) => [...ids, triviaQuestion.id]);
-    setTriviaOpen(false);
-    setTriviaQuestion(null);
+    setTriviaOpen(false); setTriviaQuestion(null);
     resetGame();
   }
 
+  // ── Play again ──────────────────────────────────────────────────────────────
   function startNextGame() {
-    const nextGameNum = gamesPlayed + 1;
-    const { canPlay } = canPlayToday(phone);
-    if (!canPlay) { onGoHome(); return; }
-    if (nextGameNum % TRIVIA_EVERY_N_GAMES === 0) {
-      openTrivia();
-    } else {
-      resetGame();
-    }
-    setGamesPlayed(nextGameNum);
+    // Trivia already triggered inside endGame; here we just reset the board
+    // (trivia overlay handles its own dismiss via handleTriviaAnswer/Skip)
+    resetGame();
   }
 
   function resetGame() {
@@ -205,11 +219,20 @@ export function GameBoard({ phone, onGoHome }: GameBoardProps) {
     setWinningLine([]);
     setGameResult(null);
     setPromoJustUnlocked(false);
-    setStatusMsg("Your move!");
+    updateStatusMsg(true);
     setTimerPaused(false);
   }
 
-  const isDisabled = !isPlayerTurn || !!gameResult;
+  // ── Turn label ───────────────────────────────────────────────────────────────
+  const turnIcon = isPlayerTurn
+    ? <PlayerIcon size={22} />
+    : gameMode === "friend" ? <FriendIcon size={22} /> : <AIIcon size={22} />;
+
+  const turnBorder = isPlayerTurn
+    ? "bg-suco-plum/10 border-suco-plum/30 text-suco-plum"
+    : gameMode === "friend"
+    ? "bg-teal-50 border-teal-400/40 text-teal-600"
+    : "bg-suco-gold/10 border-suco-gold/30 text-suco-gold";
 
   return (
     <div className="min-h-screen bg-suco-cream flex flex-col items-center justify-start p-4 pt-6">
@@ -217,23 +240,29 @@ export function GameBoard({ phone, onGoHome }: GameBoardProps) {
 
         {/* Header */}
         <div className="flex items-center justify-between">
-          <button
-            onClick={onGoHome}
-            className="p-2 rounded-xl bg-white/50 hover:bg-white/80 text-suco-mid hover:text-suco-dark transition-all text-sm border border-suco-border/40 shadow-sm"
-          >
+          <button onClick={onGoHome}
+            className="p-2 rounded-xl bg-white/50 hover:bg-white/80 text-suco-mid hover:text-suco-dark transition-all text-sm border border-suco-border/40 shadow-sm">
             ← Home
           </button>
           <div className="text-center">
-            <p className="text-xs text-suco-muted">Playing as</p>
+            <p className="text-xs text-suco-muted">
+              {gameMode === "friend" ? "Pass & Play 👥" : "vs AI 🤖"}
+            </p>
             <div className="flex items-center gap-1 justify-center">
-              <PlayerIcon size={18} />
-              <span className="text-xs text-suco-plum font-bold">{phone}</span>
+              <PlayerIcon size={16} />
+              <span className="text-xs text-suco-plum font-bold">{phone.slice(-8)}</span>
+              {gameMode === "friend" && friendPhone && (
+                <>
+                  <span className="text-suco-muted text-xs mx-0.5">vs</span>
+                  <FriendIcon size={16} />
+                  <span className="text-xs text-teal-600 font-bold">{friendPhone.slice(-8)}</span>
+                </>
+              )}
             </div>
           </div>
-          <div className="w-16 flex justify-end">
-            {/* Tiny indicator when fetching fresh questions */}
+          <div className="w-14 flex justify-end">
             {triviaFetching && (
-              <div title="Loading trivia…" className="w-4 h-4 border-2 border-suco-plum border-t-transparent rounded-full animate-spin opacity-50" />
+              <div title="Loading trivia…" className="w-4 h-4 border-2 border-suco-plum border-t-transparent rounded-full animate-spin opacity-40" />
             )}
           </div>
         </div>
@@ -241,55 +270,46 @@ export function GameBoard({ phone, onGoHome }: GameBoardProps) {
         {/* Turn indicator + Timer */}
         <div className="flex items-center justify-between">
           <motion.div
-            className={`flex items-center gap-2 px-4 py-2 rounded-2xl border transition-all ${
-              isPlayerTurn && !gameResult
-                ? "bg-suco-plum/10 border-suco-plum/30 text-suco-plum"
-                : "bg-suco-gold/10 border-suco-gold/30 text-suco-gold"
-            }`}
-            animate={{ scale: showPlayerTurnFlash ? [1, 1.05, 1] : 1 }}
+            className={`flex items-center gap-2 px-4 py-2 rounded-2xl border transition-all ${turnBorder}`}
+            animate={{ scale: showTurnFlash ? [1, 1.06, 1] : 1 }}
           >
-            {isPlayerTurn || gameResult ? <PlayerIcon size={22} /> : <AIIcon size={22} />}
-            <span className="text-xs font-bold truncate max-w-[80px]">{statusMsg}</span>
+            {turnIcon}
+            <span className="text-xs font-bold truncate max-w-[90px]">{statusMsg}</span>
           </motion.div>
-
           <Timer seconds={timeLeft} totalSeconds={GAME_DURATION} onTick={handleTick} paused={timerPaused || !!gameResult} />
         </div>
 
         {/* Board */}
-        <motion.div
-          className="grid grid-cols-3 gap-2 p-3 bg-suco-beige/50 rounded-3xl border border-suco-border/40 shadow-sm"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-        >
+        <motion.div className="grid grid-cols-3 gap-2 p-3 bg-suco-beige/50 rounded-3xl border border-suco-border/40 shadow-sm"
+          initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
           {board.map((cell, i) => (
-            <GameCell
-              key={i}
-              value={cell}
-              index={i}
+            <GameCell key={i} value={cell} index={i}
               isWinningCell={winningLine.includes(i)}
               onClick={handleCellClick}
-              disabled={isDisabled}
+              disabled={!!gameResult || timerPaused}
             />
           ))}
         </motion.div>
 
         {/* Legend */}
         <div className="flex justify-center gap-6 text-xs text-suco-muted">
-          <div className="flex items-center gap-1.5">
-            <PlayerIcon size={16} />
-            <span className="font-medium">You</span>
-          </div>
+          <div className="flex items-center gap-1.5"><PlayerIcon size={16} /><span className="font-medium">You</span></div>
           <div className="h-4 w-px bg-suco-border/50" />
           <div className="flex items-center gap-1.5">
-            <AIIcon size={16} />
-            <span className="font-medium">AI</span>
+            {gameMode === "friend" ? <FriendIcon size={16} /> : <AIIcon size={16} />}
+            <span className="font-medium">{gameMode === "friend" ? "Friend" : "AI"}</span>
           </div>
         </div>
 
-        {/* Score */}
-        <ScoreBoard playerWins={sessionWins} aiWins={sessionLoses} draws={sessionDraws} totalWins={totalWins} />
+        {/* Scoreboard */}
+        <ScoreBoard
+          playerWins={sessionWins} aiWins={sessionLoses} draws={sessionDraws}
+          weeklyWins={weeklyWins} gameMode={gameMode} friendPhone={friendPhone}
+          promoEarnedThisWeek={promoEarnedThisWeek}
+        />
       </div>
 
+      {/* Win/Lose popup */}
       <WinPopup
         result={gameResult}
         promoCode={promoCode}
@@ -299,7 +319,7 @@ export function GameBoard({ phone, onGoHome }: GameBoardProps) {
         onGoHome={onGoHome}
       />
 
-      {/* Trivia challenge — shows loading skeleton until question is ready */}
+      {/* Trivia challenge (shows after every win or draw) */}
       <AnimatePresence>
         {triviaOpen && (
           <TriviaChallenge

@@ -79,3 +79,25 @@ export function AIIcon({ size = 48 }: { size?: number }) {
     </svg>
   );
 }
+
+/** Friend icon — teal/green açaí cup variant to distinguish from the player */
+export function FriendIcon({ size = 48 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 60 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+      {/* Cup body */}
+      <path d="M12 22 L15 52 H45 L48 22 Z" fill="#0D9488" stroke="#0F766E" strokeWidth="1.5" />
+      {/* Lid */}
+      <rect x="9" y="14" width="42" height="9" rx="4" fill="#14B8A6" />
+      {/* Straw */}
+      <rect x="34" y="4" width="5" height="24" rx="2.5" fill="#0F766E" />
+      <rect x="34" y="8"  width="5" height="3"  rx="1"   fill="#0D9488" />
+      <rect x="34" y="14" width="5" height="3"  rx="1"   fill="#0D9488" />
+      {/* Shine */}
+      <path d="M19 28 Q23 26 23 42" stroke="rgba(255,255,255,0.35)" strokeWidth="2.5" strokeLinecap="round" />
+      {/* Açaí dots */}
+      <circle cx="28" cy="36" r="3"   fill="#0F766E" opacity="0.9" />
+      <circle cx="35" cy="42" r="2.5" fill="#0D9488" opacity="0.9" />
+      <circle cx="24" cy="44" r="2"   fill="#115E59" opacity="0.9" />
+    </svg>
+  );
+}
