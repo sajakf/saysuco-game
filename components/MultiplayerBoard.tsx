@@ -12,7 +12,7 @@ import { sounds } from "@/lib/sounds";
 import type { Board, Cell } from "@/lib/gameLogic";
 import type { GameRoom, CellMark } from "@/lib/roomStore";
 import {
-  fetchTriviaFromAPI, pickFromPool, getRandomTrivia,
+  fetchTriviaFromAPI, fetchSpotifyTrivia, pickFromPool, getRandomTrivia,
   FALLBACK_QUESTIONS, type TriviaQuestion,
 } from "@/lib/trivia";
 
@@ -72,8 +72,16 @@ export function MultiplayerBoard({ roomId, myPhone, myMark, opponentPhone, onGoH
     if (fetchingRef.current) return;
     fetchingRef.current = true; setTriviaFetching(true);
     try {
-      const qs = await fetchTriviaFromAPI(15);
-      setTriviaPool((p) => { const ids = new Set(p.map((q) => q.id)); return [...p, ...qs.filter((q) => !ids.has(q.id))]; });
+      // Fetch OpenTDB + Spotify in parallel; Spotify silently returns [] if unconfigured
+      const [otdbQs, spotifyQs] = await Promise.allSettled([
+        fetchTriviaFromAPI(15),
+        fetchSpotifyTrivia(),
+      ]);
+      const newQs = [
+        ...(otdbQs.status === "fulfilled" ? otdbQs.value : []),
+        ...(spotifyQs.status === "fulfilled" ? spotifyQs.value : []),
+      ];
+      setTriviaPool((p) => { const ids = new Set(p.map((q) => q.id)); return [...p, ...newQs.filter((q) => !ids.has(q.id))]; });
     } catch {}
     finally { setTriviaFetching(false); fetchingRef.current = false; }
   }

@@ -12,7 +12,7 @@ import { createEmptyBoard, getBestMove, checkWinner, isBoardFull, type Board } f
 import { recordGameResult, getPlayerData, getWeeklyPromoStatus } from "@/lib/storage";
 import { sounds } from "@/lib/sounds";
 import {
-  fetchTriviaFromAPI, pickFromPool, getRandomTrivia,
+  fetchTriviaFromAPI, fetchSpotifyTrivia, pickFromPool, getRandomTrivia,
   FALLBACK_QUESTIONS, type TriviaQuestion,
 } from "@/lib/trivia";
 import type { GameMode } from "./LandingScreen";
@@ -78,16 +78,24 @@ export function GameBoard({ phone, gameMode, friendPhone, onGoHome }: GameBoardP
     }
   }
 
-  // ── Trivia pool fetch ───────────────────────────────────────────────────────
+  // ── Trivia pool fetch (OpenTDB + Spotify mixed) ────────────────────────────
   async function fetchPool() {
     if (fetchingRef.current) return;
     fetchingRef.current = true;
     setTriviaFetching(true);
     try {
-      const qs = await fetchTriviaFromAPI(15);
+      // Fetch both sources in parallel; Spotify silently returns [] if unconfigured
+      const [otdbQs, spotifyQs] = await Promise.allSettled([
+        fetchTriviaFromAPI(15),
+        fetchSpotifyTrivia(),
+      ]);
+      const newQs = [
+        ...(otdbQs.status === "fulfilled" ? otdbQs.value : []),
+        ...(spotifyQs.status === "fulfilled" ? spotifyQs.value : []),
+      ];
       setTriviaPool((prev) => {
         const ids = new Set(prev.map((q) => q.id));
-        return [...prev, ...qs.filter((q) => !ids.has(q.id))];
+        return [...prev, ...newQs.filter((q) => !ids.has(q.id))];
       });
     } catch { /* fallback already in pool */ }
     finally { setTriviaFetching(false); fetchingRef.current = false; }

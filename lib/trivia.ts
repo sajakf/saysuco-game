@@ -7,7 +7,7 @@ export interface TriviaQuestion {
   emoji: string;
   category?: string;
   difficulty?: string;
-  source: "api" | "local";
+  source: "api" | "local" | "spotify";
 }
 
 // ─── Category → emoji map ────────────────────────────────────────────────────
@@ -36,6 +36,7 @@ const CATEGORY_EMOJI: Record<string, string> = {
   "Celebrities":                    "⭐",
   "Animals":                        "🐾",
   "Vehicles":                       "🚗",
+  "Music":                          "🎵",
 };
 
 function categoryToEmoji(cat: string): string {
@@ -189,6 +190,18 @@ export function pickFromPool(
   const available = pool.filter((q) => !excludeIds.includes(q.id));
   if (available.length === 0) return null;
   return available[Math.floor(Math.random() * available.length)];
+}
+
+// ─── Spotify music trivia (calls our server-side proxy route) ────────────────
+export async function fetchSpotifyTrivia(): Promise<TriviaQuestion[]> {
+  try {
+    const res = await fetch("/api/spotify-trivia", { cache: "no-store" });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.questions as TriviaQuestion[]) ?? [];
+  } catch {
+    return [];
+  }
 }
 
 // ─── Legacy fallback (used if pool is totally empty) ─────────────────────────
