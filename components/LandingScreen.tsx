@@ -1,15 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { QRCodeSVG } from "qrcode.react";
 import { SucoLogo, PlayerIcon, AIIcon, FriendIcon } from "./SucoLogo";
 import { createPlayer } from "@/lib/storage";
 import { sounds } from "@/lib/sounds";
+import type { GameRoom } from "@/lib/roomStore";
 
 export type GameMode = "ai" | "friend";
 
 interface LandingScreenProps {
+  /** AI mode or pass-and-play friend (legacy). */
   onStart: (phone: string, mode: GameMode, friendPhone?: string) => void;
+  /** Real multiplayer: friend joined via invite link. */
+  onStartMultiplayer: (roomId: string, myPhone: string, opponentPhone: string) => void;
   onViewQR: () => void;
 }
 
@@ -19,10 +24,13 @@ function validateKuwait(value: string): boolean {
   return /^[569]\d{7}$/.test(value.replace(/\D/g, ""));
 }
 
-export function LandingScreen({ onStart, onViewQR }: LandingScreenProps) {
+// ── Main landing screen ───────────────────────────────────────────────────────
+export function LandingScreen({ onStart, onStartMultiplayer, onViewQR }: LandingScreenProps) {
   const [localNumber, setLocalNumber] = useState("");
-  const [error, setError] = useState("");
-  const [step, setStep] = useState<"enter" | "mode">("enter");
+  const [error, setError]             = useState("");
+  const [step, setStep]               = useState<"enter" | "mode" | "invite">("enter");
+  const [phone, setPhone]             = useState("");
+  const [inviteRoomId, setInviteRoomId] = useState("");
 
   const fullPhone = `${KUWAIT.code}${localNumber.replace(/\D/g, "")}`;
 
@@ -35,29 +43,58 @@ export function LandingScreen({ onStart, onViewQR }: LandingScreenProps) {
     sounds.click();
     setError("");
     createPlayer(fullPhone);
+    setPhone(fullPhone);
     setStep("mode");
+  }
+
+  async function handleChooseMultiplayer() {
+    // Create a room on the server, then show invite screen
+    sounds.click();
+    try {
+      const res = await fetch("/api/rooms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ p1Phone: phone }),
+      });
+      if (!res.ok) throw new Error("create failed");
+      const room: GameRoom = await res.json();
+      setInviteRoomId(room.id);
+      setStep("invite");
+    } catch {
+      alert("Could not create game room. Please try again.");
+    }
   }
 
   if (step === "mode") {
     return (
       <ModeScreen
-        phone={fullPhone}
-        onStart={onStart}
+        phone={phone}
+        onChooseAI={() => { sounds.click(); onStart(phone, "ai"); }}
+        onChooseFriend={handleChooseMultiplayer}
         onBack={() => setStep("enter")}
       />
     );
   }
 
+  if (step === "invite") {
+    return (
+      <InviteScreen
+        roomId={inviteRoomId}
+        myPhone={phone}
+        onFriendJoined={(opponentPhone) => onStartMultiplayer(inviteRoomId, phone, opponentPhone)}
+        onCancel={() => setStep("mode")}
+      />
+    );
+  }
+
+  // ── Phone entry ─────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-suco-cream flex flex-col items-center justify-center p-6">
       <div className="w-full max-w-sm space-y-8">
 
         {/* Logo */}
-        <motion.div
-          className="flex flex-col items-center gap-4"
-          initial={{ opacity: 0, y: -30 }} animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6 }}
-        >
+        <motion.div className="flex flex-col items-center gap-4"
+          initial={{ opacity: 0, y: -30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}>
           <motion.div animate={{ y: [0, -8, 0] }} transition={{ duration: 3, repeat: Infinity }}>
             <SucoLogo size={88} />
           </motion.div>
@@ -72,21 +109,21 @@ export function LandingScreen({ onStart, onViewQR }: LandingScreenProps) {
         </motion.div>
 
         {/* Pills */}
-        <motion.div className="flex flex-wrap justify-center gap-2" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }}>
-          {["🏆 10 wins/week → Promo", "⏱ 60-Sec Challenge", "🧠 Live Trivia", "👥 vs Friend"].map((tag) => (
+        <motion.div className="flex flex-wrap justify-center gap-2"
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }}>
+          {["🏆 10 wins/week → Promo", "⏱ 60-Sec Challenge", "🧠 Live Trivia", "📲 Invite Friends"].map((tag) => (
             <span key={tag} className="text-xs bg-white/60 border border-suco-plum/20 rounded-full px-3 py-1 text-suco-mid font-medium shadow-sm">
               {tag}
             </span>
           ))}
         </motion.div>
 
-        {/* Phone entry */}
+        {/* Phone entry form */}
         <motion.form onSubmit={handlePhoneSubmit} className="space-y-4"
           initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
           <div className="space-y-1">
             <label className="text-xs text-suco-mid uppercase tracking-widest font-semibold">Mobile Number</label>
             <div className="flex gap-2">
-              {/* Country badge — Kuwait only */}
               <div className="flex items-center gap-2 bg-white/70 border border-suco-plum/20 rounded-2xl px-3 py-4 shadow-sm min-w-[110px] cursor-default select-none">
                 <span className="text-lg leading-none">{KUWAIT.flag}</span>
                 <div className="flex flex-col leading-tight">
@@ -108,18 +145,21 @@ export function LandingScreen({ onStart, onViewQR }: LandingScreenProps) {
               </motion.p>
             )}
           </div>
-          <button type="submit" className="w-full py-4 bg-suco-plum hover:bg-suco-plum2 active:scale-95 text-white font-black text-lg rounded-2xl transition-all shadow-lg">
+          <button type="submit"
+            className="w-full py-4 bg-suco-plum hover:bg-suco-plum2 active:scale-95 text-white font-black text-lg rounded-2xl transition-all shadow-lg">
             Join the Game 🥤
           </button>
         </motion.form>
 
         <motion.div className="text-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6 }}>
-          <button onClick={() => { sounds.click(); onViewQR(); }} className="text-sm text-suco-mid hover:text-suco-plum transition-colors underline underline-offset-2">
+          <button onClick={() => { sounds.click(); onViewQR(); }}
+            className="text-sm text-suco-mid hover:text-suco-plum transition-colors underline underline-offset-2">
             Share this game 📲
           </button>
         </motion.div>
 
-        <motion.div className="flex justify-center items-center gap-8 opacity-30" animate={{ opacity: [0.2, 0.4, 0.2] }} transition={{ duration: 3, repeat: Infinity }}>
+        <motion.div className="flex justify-center items-center gap-8 opacity-30"
+          animate={{ opacity: [0.2, 0.4, 0.2] }} transition={{ duration: 3, repeat: Infinity }}>
           <PlayerIcon size={40} />
           <span className="text-2xl text-suco-plum font-black">VS</span>
           <AIIcon size={40} />
@@ -129,34 +169,19 @@ export function LandingScreen({ onStart, onViewQR }: LandingScreenProps) {
   );
 }
 
-// ── Mode Selection Screen ─────────────────────────────────────────────────────
+// ── Mode selection ────────────────────────────────────────────────────────────
 function ModeScreen({
-  phone, onStart, onBack,
-}: { phone: string; onStart: (p: string, m: GameMode, fp?: string) => void; onBack: () => void }) {
-  const [mode, setMode] = useState<GameMode | null>(null);
-  const [friendLocal, setFriendLocal] = useState("");
-  const [friendError, setFriendError] = useState("");
-
-  function handleStart() {
-    sounds.click();
-    if (mode === "ai") { onStart(phone, "ai"); return; }
-    if (mode === "friend") {
-      if (!validateKuwait(friendLocal)) {
-        setFriendError("Enter a valid Kuwait number for your friend.");
-        return;
-      }
-      const friendFull = `${KUWAIT.code}${friendLocal.replace(/\D/g, "")}`;
-      if (friendFull === phone) {
-        setFriendError("Friend's number can't be the same as yours!");
-        return;
-      }
-      onStart(phone, "friend", friendFull);
-    }
-  }
-
+  phone, onChooseAI, onChooseFriend, onBack,
+}: {
+  phone: string;
+  onChooseAI: () => void;
+  onChooseFriend: () => void;
+  onBack: () => void;
+}) {
   return (
     <div className="min-h-screen bg-suco-cream flex flex-col items-center justify-center p-6">
-      <motion.div className="w-full max-w-sm space-y-6" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}>
+      <motion.div className="w-full max-w-sm space-y-6"
+        initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}>
 
         <div className="text-center">
           <SucoLogo size={64} />
@@ -167,75 +192,39 @@ function ModeScreen({
         {/* Mode cards */}
         <div className="grid grid-cols-2 gap-3">
           {/* vs AI */}
-          <button
-            onClick={() => { sounds.click(); setMode("ai"); setFriendLocal(""); setFriendError(""); }}
-            className={`flex flex-col items-center gap-3 p-5 rounded-2xl border-2 transition-all ${
-              mode === "ai"
-                ? "border-suco-plum bg-suco-plum/10 shadow-md"
-                : "border-suco-border/60 bg-white/60 hover:border-suco-plum/40"
-            }`}
+          <motion.button
+            onClick={onChooseAI}
+            whileTap={{ scale: 0.96 }}
+            className="flex flex-col items-center gap-3 p-5 rounded-2xl border-2 border-suco-border/60 bg-white/60 hover:border-suco-plum/40 hover:bg-suco-plum/5 transition-all shadow-sm"
           >
-            <AIIcon size={44} />
+            <AIIcon size={48} />
             <div className="text-center">
-              <p className="font-black text-suco-dark text-sm">vs AI</p>
+              <p className="font-black text-suco-dark text-sm">vs AI 🤖</p>
               <p className="text-[11px] text-suco-muted mt-0.5">Solo challenge</p>
             </div>
-            {mode === "ai" && <span className="text-suco-plum text-lg">✓</span>}
-          </button>
+          </motion.button>
 
           {/* vs Friend */}
-          <button
-            onClick={() => { sounds.click(); setMode("friend"); }}
-            className={`flex flex-col items-center gap-3 p-5 rounded-2xl border-2 transition-all ${
-              mode === "friend"
-                ? "border-teal-500 bg-teal-50 shadow-md"
-                : "border-suco-border/60 bg-white/60 hover:border-teal-400/40"
-            }`}
+          <motion.button
+            onClick={onChooseFriend}
+            whileTap={{ scale: 0.96 }}
+            className="flex flex-col items-center gap-3 p-5 rounded-2xl border-2 border-suco-border/60 bg-white/60 hover:border-teal-400/40 hover:bg-teal-50 transition-all shadow-sm"
           >
-            <FriendIcon size={44} />
+            <FriendIcon size={48} />
             <div className="text-center">
-              <p className="font-black text-suco-dark text-sm">vs Friend</p>
-              <p className="text-[11px] text-suco-muted mt-0.5">Pass & play</p>
+              <p className="font-black text-suco-dark text-sm">vs Friend 👥</p>
+              <p className="text-[11px] text-suco-muted mt-0.5">Invite via link</p>
             </div>
-            {mode === "friend" && <span className="text-teal-600 text-lg">✓</span>}
-          </button>
+          </motion.button>
         </div>
 
-        {/* Friend phone input */}
-        <AnimatePresence>
-          {mode === "friend" && (
-            <motion.div className="space-y-2"
-              initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
-              <label className="text-xs text-suco-mid uppercase tracking-widest font-semibold">Friend's Kuwait Number</label>
-              <div className="flex gap-2">
-                <div className="flex items-center gap-2 bg-white/70 border border-teal-300/50 rounded-2xl px-3 py-3 shadow-sm min-w-[100px] cursor-default select-none">
-                  <span className="text-base leading-none">{KUWAIT.flag}</span>
-                  <span className="text-sm font-bold text-teal-600">{KUWAIT.code}</span>
-                </div>
-                <input
-                  type="tel" inputMode="numeric"
-                  value={friendLocal}
-                  onChange={(e) => { setFriendLocal(e.target.value.replace(/\D/g, "").slice(0, 8)); setFriendError(""); }}
-                  placeholder="5XXX XXXX"
-                  className="flex-1 bg-white/70 border border-teal-300/50 focus:border-teal-500/60 rounded-2xl px-4 py-3 text-suco-dark placeholder-suco-muted outline-none transition-all text-base shadow-sm tracking-widest"
-                />
-              </div>
-              {friendError && (
-                <motion.p className="text-red-600 text-xs" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                  {friendError}
-                </motion.p>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Rules quick summary */}
-        <div className="bg-white/60 border border-suco-plum/15 rounded-2xl p-4 text-left space-y-1.5 shadow-sm">
+        {/* Quick rules */}
+        <div className="bg-white/60 border border-suco-plum/15 rounded-2xl p-4 space-y-1.5 shadow-sm">
           {[
             ["⏱", "60-second countdown"],
             ["🏆", "10 weekly wins → promo code"],
-            ["🧠", "Trivia pops up on every win or draw"],
-            ["🔄", "Play unlimited — new promo each week"],
+            ["🧠", "Trivia bonus on every win or draw"],
+            ["📲", "Friend joins on their own device"],
           ].map(([icon, text]) => (
             <div key={text as string} className="flex items-center gap-2 text-xs text-suco-mid">
               <span>{icon}</span><span>{text}</span>
@@ -243,16 +232,144 @@ function ModeScreen({
           ))}
         </div>
 
-        <button
-          onClick={handleStart}
-          disabled={!mode || (mode === "friend" && friendLocal.length < 8)}
-          className="w-full py-4 bg-suco-plum hover:bg-suco-plum2 disabled:opacity-40 disabled:cursor-not-allowed text-white font-black text-xl rounded-2xl transition-all shadow-lg active:scale-95"
-        >
-          Start Game! 🎮
-        </button>
-
         <button onClick={onBack} className="w-full text-xs text-suco-muted hover:text-suco-mid transition-colors text-center">
           ← Change number
+        </button>
+      </motion.div>
+    </div>
+  );
+}
+
+// ── Invite screen (host waits for friend to join) ─────────────────────────────
+function InviteScreen({
+  roomId, myPhone, onFriendJoined, onCancel,
+}: {
+  roomId: string;
+  myPhone: string;
+  onFriendJoined: (opponentPhone: string) => void;
+  onCancel: () => void;
+}) {
+  const [copied, setCopied]     = useState(false);
+  const [friendJoining, setFriendJoining] = useState(false);
+  const pollRef                 = useRef<NodeJS.Timeout | null>(null);
+  const doneRef                 = useRef(false);
+
+  // Build the invite URL
+  const [inviteUrl, setInviteUrl] = useState("");
+  useEffect(() => {
+    setInviteUrl(`${window.location.origin}/join/${roomId}`);
+  }, [roomId]);
+
+  const poll = useCallback(async () => {
+    if (doneRef.current) return;
+    try {
+      const res = await fetch(`/api/rooms/${roomId}`);
+      if (!res.ok) return;
+      const room: GameRoom = await res.json();
+      if (room.status === "playing" && room.p2Phone) {
+        doneRef.current = true;
+        if (pollRef.current) clearInterval(pollRef.current);
+        setFriendJoining(true);
+        sounds.click();
+        setTimeout(() => onFriendJoined(room.p2Phone!), 600);
+      }
+    } catch { /* ignore */ }
+  }, [roomId, onFriendJoined]);
+
+  useEffect(() => {
+    poll();
+    pollRef.current = setInterval(poll, 1500);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [poll]);
+
+  function handleCopy() {
+    navigator.clipboard.writeText(inviteUrl).then(() => {
+      sounds.click();
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    });
+  }
+
+  return (
+    <div className="min-h-screen bg-suco-cream flex flex-col items-center justify-center p-6">
+      <motion.div className="w-full max-w-sm space-y-6"
+        initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}>
+
+        <div className="text-center">
+          <SucoLogo size={60} />
+          <h2 className="text-2xl font-black text-suco-dark mt-3">Invite Your Friend</h2>
+          <p className="text-sm text-suco-mid mt-1">Share the code or link — waiting for them to join…</p>
+        </div>
+
+        {/* Room code */}
+        <div className="bg-white/80 border-2 border-suco-plum/20 rounded-2xl p-5 text-center shadow-sm">
+          <p className="text-[10px] text-suco-muted uppercase tracking-widest font-semibold mb-3">Room Code</p>
+          <div className="flex justify-center gap-1.5 mb-4">
+            {roomId.split("").map((char, i) => (
+              <motion.span
+                key={i}
+                initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+                transition={{ delay: i * 0.07 }}
+                className="w-11 h-13 bg-suco-plum/10 border border-suco-plum/25 rounded-xl flex items-center justify-center text-2xl font-black text-suco-plum shadow-sm px-2 py-2"
+              >
+                {char}
+              </motion.span>
+            ))}
+          </div>
+
+          {/* QR code */}
+          {inviteUrl && (
+            <div className="flex justify-center mb-4">
+              <div className="bg-white p-3 rounded-xl border border-suco-border/40 shadow-sm inline-block">
+                <QRCodeSVG value={inviteUrl} size={120} fgColor="#85184F" bgColor="#FFFFFF" />
+              </div>
+            </div>
+          )}
+
+          {/* Copy link button */}
+          <button
+            onClick={handleCopy}
+            className={`w-full py-2.5 rounded-xl text-sm font-bold transition-all border ${
+              copied
+                ? "bg-green-50 border-green-400/50 text-green-700"
+                : "bg-suco-plum/8 border-suco-plum/25 text-suco-plum hover:bg-suco-plum/15"
+            }`}
+          >
+            {copied ? "✅ Link Copied!" : "📋 Copy Invite Link"}
+          </button>
+        </div>
+
+        {/* Waiting animation */}
+        <motion.div
+          className={`flex flex-col items-center gap-3 py-4 px-5 rounded-2xl border transition-all ${
+            friendJoining
+              ? "bg-green-50 border-green-400/40"
+              : "bg-white/60 border-suco-border/30"
+          }`}
+          animate={friendJoining ? { scale: [1, 1.04, 1] } : {}}
+        >
+          {friendJoining ? (
+            <p className="text-sm font-bold text-green-700">🎉 Friend joined! Starting game…</p>
+          ) : (
+            <>
+              <p className="text-xs text-suco-muted font-medium">Waiting for your friend…</p>
+              <div className="flex gap-1.5">
+                {[0, 1, 2].map((i) => (
+                  <motion.div key={i} className="w-2.5 h-2.5 bg-suco-plum rounded-full"
+                    animate={{ scale: [1, 1.6, 1], opacity: [0.4, 1, 0.4] }}
+                    transition={{ duration: 0.9, repeat: Infinity, delay: i * 0.2 }} />
+                ))}
+              </div>
+              <p className="text-[11px] text-suco-muted text-center">
+                Your number: <span className="font-bold text-suco-plum">{myPhone.slice(-8)}</span>
+              </p>
+            </>
+          )}
+        </motion.div>
+
+        <button onClick={onCancel}
+          className="w-full text-xs text-suco-muted hover:text-suco-mid transition-colors text-center">
+          ← Cancel &amp; go back
         </button>
       </motion.div>
     </div>

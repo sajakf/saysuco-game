@@ -61,6 +61,12 @@ function shuffleArray<T>(arr: T[]): T[] {
 }
 
 // ─── Open Trivia DB API ───────────────────────────────────────────────────────
+// Themed categories aligned with Say Suco's health / nature / food identity:
+//   9  = General Knowledge  17 = Science & Nature
+//  22  = Geography          27 = Animals
+//  25  = Art (bonus variety)
+const THEMED_CATEGORY_IDS = [9, 17, 22, 27, 25];
+
 interface OTDBResult {
   category: string;
   type: string;
@@ -78,7 +84,9 @@ interface OTDBResponse {
 let idCounter = 1000; // API questions get IDs ≥ 1000
 
 export async function fetchTriviaFromAPI(amount = 10): Promise<TriviaQuestion[]> {
-  const url = `https://opentdb.com/api.php?amount=${amount}&type=multiple&encode=url3986`;
+  // Pick a random themed category each fetch for variety
+  const catId = THEMED_CATEGORY_IDS[Math.floor(Math.random() * THEMED_CATEGORY_IDS.length)];
+  const url = `https://opentdb.com/api.php?amount=${amount}&type=multiple&encode=url3986&category=${catId}`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`OTDB HTTP ${res.status}`);
 
